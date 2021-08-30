@@ -18,7 +18,6 @@ import { ApiPromise, WsProvider } from '@polkadot/api';
 
 import {
   Connection,
-  PublicKey,
   Transaction,
   clusterApiUrl,
   SystemProgram
@@ -63,8 +62,6 @@ function App() {
   const [network, setNetwork] = useState(null)
   const [balance, setBalance] = useState(null)
   const [wallet, setWallet] = useState({})
-  //const [phantom, setPhantom] = useState(null)
-  //const [polkadot, setPolkadot] = useState(null)
 
   const [ethereum, setEthereum] = useState(null)
   const [notify, setNotify] = useState(null)
@@ -213,8 +210,7 @@ function App() {
     const wsProvider = new WsProvider('wss://rpc.polkadot.io');
     const api = await ApiPromise.create({ provider: wsProvider });
     const transferExtrinsic = api.tx.balances.transfer(provider.POLKADOT.address, 1)
-    const injector = await web3FromSource(provider.POLKADOT.account.meta.source);
-    let notified = null
+    const injector = await web3FromSource(provider.POLKADOT.account.meta.source)
 
     // Because of the polkadot call back pattern on the signAndSend, need to send something out pre-flight
     const notificationObject = {

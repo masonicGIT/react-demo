@@ -1,23 +1,22 @@
 # React Demo
 
-A repository to demonstrate a basic integration of 
-[Onboard](https://github.com/blocknative/onboard) 
-and [Notify](https://github.com/blocknative/onboard) into a React project.
-For detailed documentation, head to [docs.blocknative.com](https://docs.blocknative.com)
+A repository to demonstrate a basic integration of the following wallets:
+- Ethereum with [Onboard](https://github.com/blocknative/onboard) and [Notify](https://github.com/blocknative/onboard) into a React project.
+- Solana with [Phantom Wallet](https://phantom.app/)
+- Polkadot with [Polkadot.JS](https://polkadot.js.org/extension/) extension
 
-
-<div align="center">
-  <img style="border-radius: 8px" width="75%" src="assets/react-demo.png">
-</div>
-
-View live demo [here](https://reactdemo.blocknative.com/)!
+![](/public/img/ethereum.png)
+![](/public/img/polkadot.png)
+![](/public/img/phantom.png)
 
 ## Getting started
+
+**Note: Before starting ensure you've downloaded Metamask, PolkadotJS extenstion and Phantom Wallet**
 
 Clone the repo:
 
 ```bash
-git clone https://github.com/blocknative/react-demo.git
+git clone https://github.com/masonicgit/react-demo.git
 ```
 
 Navigate to the project directory:
