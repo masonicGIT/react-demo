@@ -1,10 +1,28 @@
 import React, { useState, useEffect } from 'react'
+
 import { ethers } from 'ethers'
 import VConsole from 'vconsole'
 import getSigner from './signer'
 import { initOnboard, initNotify } from './services'
 import { version, dependencies } from '../package.json'
 import avatarPlaceholder from './avatar-placeholder.png'
+import {
+  web3Accounts,
+  web3Enable,
+  web3AccountsSubscribe,
+  web3FromSource
+
+} from '@polkadot/extension-dapp';
+
+import { ApiPromise, WsProvider } from '@polkadot/api';
+
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  clusterApiUrl,
+  SystemProgram
+} from "@solana/web3.js";
 
 import './App.css'
 
@@ -14,7 +32,11 @@ if (window.innerWidth < 700) {
   new VConsole()
 }
 
-let provider
+let provider = {
+  ETHEREUM: null,
+  SOLANA: null,
+  POLKADOT: null
+}
 
 const internalTransferABI = [
   {
@@ -37,11 +59,14 @@ let internalTransferContract
 function App() {
   const [address, setAddress] = useState(null)
   const [ens, setEns] = useState(null)
+  const [asset, setAsset] = useState(null)
   const [network, setNetwork] = useState(null)
   const [balance, setBalance] = useState(null)
   const [wallet, setWallet] = useState({})
+  //const [phantom, setPhantom] = useState(null)
+  //const [polkadot, setPolkadot] = useState(null)
 
-  const [onboard, setOnboard] = useState(null)
+  const [ethereum, setEthereum] = useState(null)
   const [notify, setNotify] = useState(null)
 
   const [darkMode, setDarkMode] = useState(false)
@@ -51,7 +76,7 @@ function App() {
   const [toAddress, setToAddress] = useState('')
 
   useEffect(() => {
-    const onboard = initOnboard({
+    const ethereum = initOnboard({
       address: setAddress,
       ens: setEns,
       network: setNetwork,
@@ -64,7 +89,8 @@ function App() {
             wallet.provider
           )
 
-          provider = ethersProvider
+          provider.ETHEREUM = ethersProvider
+          setAsset('ETH')
 
           internalTransferContract = new ethers.Contract(
             '0xb8c12850827ded46b9ded8c1b6373da0c4d60370',
@@ -74,13 +100,13 @@ function App() {
 
           window.localStorage.setItem('selectedWallet', wallet.name)
         } else {
-          provider = null
+          provider.ETHEREUM = null
           setWallet({})
         }
       }
     })
 
-    setOnboard(onboard)
+    setEthereum(ethereum)
 
     setNotify(initNotify())
   }, [])
@@ -90,28 +116,214 @@ function App() {
       'selectedWallet'
     )
 
-    if (previouslySelectedWallet && onboard) {
-      onboard.walletSelect(previouslySelectedWallet)
+    if (previouslySelectedWallet && ethereum) {
+      ethereum.walletSelect(previouslySelectedWallet)
     }
-  }, [onboard])
+  }, [ethereum])
 
-  async function readyToTransact() {
-    if (!provider) {
-      const walletSelected = await onboard.walletSelect()
+  const getSolanaProvider = () => {
+    if ("solana" in window) {
+      const provider = window.solana;
+      if (provider.isPhantom) {
+        return provider;
+      }
+    }
+    window.open("https://phantom.app/", "_blank");
+  };
+
+
+  const polkadot = async () => {
+    // useEffect does not play nice w/ await/async. Ruined my life.
+    if (!!!provider.POLKADOT) {
+      setBalance(0)
+      let extensions = await web3Enable('React Demo')
+      if (extensions.length === 0) {
+        // this means no web3 wallet is there or the user denied connecting * sad face *
+        return
+      }
+
+      // set the polkadot provider
+      provider.POLKADOT = extensions[0]
+      let allAccounts = await web3Accounts()
+
+      // get and set the Polkadot address
+      provider.POLKADOT.address = allAccounts[0].address
+      setAddress(provider.POLKADOT.address)
+
+      // for use during signing a new transaction
+      provider.POLKADOT.account = allAccounts[0]
+
+      setAsset('DOT')
+      setNetwork(7)
+      const wsProvider = new WsProvider('wss://rpc.polkadot.io');
+      const api = await ApiPromise.create({ provider: wsProvider })
+      const data = await api.query.system.account(provider.POLKADOT.address)
+
+      console.dir('Polkadot account information')
+      setBalance(0)
+      setBalance(Number(data.data.free) * 10e7)
+      return
+    }
+  }
+
+  const phantom = async () => {
+    const NETWORK = clusterApiUrl('mainnet-beta')
+    if ("solana" in window) {
+      window.solana.connect()
+      window.solana.on("connect", async () => {
+        console.log("connected to phantom wallet")
+        let address = window.solana.publicKey.toString()
+        setAddress(address)
+        provider.SOLANA = getSolanaProvider()
+        provider.SOLANA.connection = new Connection("https://api.mainnet-beta.solana.com")
+        console.dir(provider.SOLANA)
+        setNetwork(6)
+        setAsset('SOL')
+        if (!!address) {
+          let balance = await provider.SOLANA.connection.getBalance(window.solana.publicKey)
+          setBalance(balance * 10e8)
+        }
+      })
+
+    }
+  }
+
+
+  const createSolanaTransaction = async () => {
+    if (!provider.SOLANA.publicKey) {
+      return
+    }
+    let balance = await(provider.SOLANA.connection.getBalance(provider.SOLANA.publicKey))
+    console.dir(balance)
+    let transaction = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: provider.SOLANA.publicKey,
+        toPubkey: provider.SOLANA.publicKey,
+        lamports: 1
+      })
+    )
+    transaction.feePayer = provider.SOLANA.publicKey;
+    console.log("Getting recent blockhash");
+    let blockhash = (await provider.SOLANA.connection.getRecentBlockhash()).blockhash
+    transaction.recentBlockhash = blockhash
+    return transaction
+  }
+
+  const sendPolkadotTransaction = async () => {
+    const wsProvider = new WsProvider('wss://rpc.polkadot.io');
+    const api = await ApiPromise.create({ provider: wsProvider });
+    const transferExtrinsic = api.tx.balances.transfer(provider.POLKADOT.address, 1)
+    const injector = await web3FromSource(provider.POLKADOT.account.meta.source);
+    let notified = null
+
+    // Because of the polkadot call back pattern on the signAndSend, need to send something out pre-flight
+    const notificationObject = {
+      eventCode: 'polkadotTxBuilding',
+      type: 'pending',
+      message: `Building your transaction`
+    }
+
+    const { update } = notify.notification(notificationObject)
+
+    transferExtrinsic.signAndSend(provider.POLKADOT.address, { signer: injector.signer }, ({ status }) => {
+      update({
+        eventCode: 'polkadotTxPending',
+        type: 'pending',
+        message: "Sending to the network with " +  "<a href='https://polkascan.io/polkadot/transaction/" + status.hash.toString() + "' target='_blank'>here</a>"
+      })
+
+      if (status.isInBlock) {
+        console.log(`Completed at block hash #${status.asInBlock.toString()}`);
+        update({
+          eventCode: 'polkadotTxComplete',
+          type: 'success',
+          message: "Transaction competed " +  "<a href='https://polkascan.io/polkadot/transaction/" + status.hash.toString() + "' target='_blank'>here</a>"
+        })
+      } else {
+        console.log(`Current status: ${status.type}`);
+      }
+    }).catch((error: any) => {
+      console.log(':( transaction failed', error);
+    });
+  }
+
+  const sendSolanaTransaction = async () => {
+    const transaction = await createSolanaTransaction()
+    if (transaction) {
+      try {
+        let signed = await provider.SOLANA.signTransaction(transaction)
+        console.log("Got signature, submitting transaction")
+        let signature = await provider.SOLANA.connection.sendRawTransaction(signed.serialize())
+        console.log(
+          "Submitted transaction " + signature + ", awaiting confirmation"
+        );
+        const { update } = notify.notification({
+          eventCode: 'solanaTxPending',
+          type: 'pending',
+          message: "Transaction sent to Solana mainnet using phantom app " + "<a href='https://solanabeach.io/transaction/" + signature + "' target='_blank'>here</a>"
+        })
+
+        await provider.SOLANA.connection.confirmTransaction(signature)
+        update({
+          eventCode: 'solanaTxSuccess',
+          message: "Transaction confirmed on solana " + "<a href='https://solanabeach.io/transaction/" + signature + "' target='_blank'>here</a>",
+          type: 'success'
+        })
+        console.log("Transaction " + signature + " confirmed")
+      } catch (e) {
+        console.warn(e);
+        console.log("Error: " + e.message)
+        console.log("Error: " + e.message)
+      }
+    }
+  };
+
+  const resetPhantom = async() => {
+    window.solana.disconnect()
+    provider.SOLANA = null
+    setAddress('')
+    setNetwork('')
+    setBalance(null)
+    setAsset(null)
+  }
+
+  const resetPolkadot = async() => {
+    provider.POLKADOT = null
+    setAddress('')
+    setNetwork('')
+    setBalance(null)
+    setAsset(null)
+    let unsubscribe; // this is the function of type `() => void` that should be called to unsubscribe
+
+    // we subscribe to any account change and log the new list.
+    // note that `web3AccountsSubscribe` returns the function to unsubscribe
+    unsubscribe = await web3AccountsSubscribe(( injectedAccounts ) => {
+      injectedAccounts.map(( accounts ) => {
+        console.log(accounts.address);
+      })
+    });
+
+    // don't forget to unsubscribe when needed, e.g when unmounting a component
+    unsubscribe && unsubscribe();
+  }
+
+  const readyToTransact = async() => {
+    if (!provider.ETHEREUM) {
+      const walletSelected = await ethereum.walletSelect()
       if (!walletSelected) return false
     }
 
-    const ready = await onboard.walletCheck()
+    const ready = await ethereum.walletCheck()
     return ready
   }
 
-  async function sendHash() {
+  const sendHash = async() => {
     if (!toAddress) {
       alert('An Ethereum address to send Eth to is required.')
       return
     }
 
-    const signer = getSigner(provider)
+    const signer = getSigner(provider.ETHEREUM)
 
     const { hash } = await signer.sendTransaction({
       to: toAddress,
@@ -136,7 +348,7 @@ function App() {
     emitter.on('txFailed', console.log)
   }
 
-  async function sendInternalTransaction() {
+  const sendInternalTransaction = async() => {
     if (!toAddress) {
       alert('An Ethereum address to send Eth to is required.')
       return
@@ -159,12 +371,13 @@ function App() {
     emitter.on('txFailed', console.log)
   }
 
-  async function sendTransaction() {
+  const sendTransaction = async() => {
     if (!toAddress) {
       alert('An Ethereum address to send Eth to is required.')
+      return
     }
 
-    const signer = getSigner(provider)
+    const signer = getSigner(provider.ETHEREUM)
 
     const txDetails = {
       to: toAddress,
@@ -174,16 +387,16 @@ function App() {
     const sendTransaction = () =>
       signer.sendTransaction(txDetails).then(tx => tx.hash)
 
-    const gasPrice = () => provider.getGasPrice().then(res => res.toString())
+    const gasPrice = () => provider.ETHEREUM.getGasPrice().then(res => res.toString())
 
     const estimateGas = () =>
-      provider.estimateGas(txDetails).then(res => res.toString())
+      provider.ETHEREUM.estimateGas(txDetails).then(res => res.toString())
 
     const { emitter } = await notify.transaction({
       sendTransaction,
       gasPrice,
       estimateGas,
-      balance: onboard.getState().balance,
+      balance: ethereum.getState().balance,
       txDetails
     })
 
@@ -203,7 +416,7 @@ function App() {
     emitter.on('txFailed', console.log)
   }
 
-  return onboard && notify ? (
+  return ethereum && notify ? (
     <main>
       <header className="user-info">
         {ens && ens.name ? (
@@ -221,21 +434,23 @@ function App() {
           address && <span>{address}</span>
         )}
         {balance != null && (
+          <div>
           <span>
-            {Number(balance) > 0 ? balance / 1000000000000000000 : balance} ETH
+            {(Number(balance).toFixed(2) > 0 ? (balance / 1000000000000000000).toFixed(2) : balance.toFixed(2)) + ' ' + asset}
           </span>
+          </div>
         )}
         {network && <span>{networkName(network)} network</span>}
       </header>
       <section className="main">
         <div className="container">
-          <h2>Onboarding Users with Onboard</h2>
+          <h2>Connect with Ethereum</h2>
           <div>
             {!wallet.provider && (
               <button
                 className="bn-demo-button"
                 onClick={() => {
-                  onboard.walletSelect()
+                  ethereum.walletSelect()
                 }}
               >
                 Select a Wallet
@@ -243,19 +458,19 @@ function App() {
             )}
 
             {wallet.provider && (
-              <button className="bn-demo-button" onClick={onboard.walletCheck}>
+              <button className="bn-demo-button" onClick={ethereum.walletCheck}>
                 Wallet Checks
               </button>
             )}
 
             {wallet.provider && (
-              <button className="bn-demo-button" onClick={onboard.walletSelect}>
+              <button className="bn-demo-button" onClick={ethereum.walletSelect}>
                 Switch Wallets
               </button>
             )}
 
             {wallet.provider && (
-              <button className="bn-demo-button" onClick={onboard.walletReset}>
+              <button className="bn-demo-button" onClick={ethereum.walletReset}>
                 Reset Wallet State
               </button>
             )}
@@ -267,125 +482,260 @@ function App() {
             {wallet.provider && wallet.type === 'hardware' && address && (
               <button
                 className="bn-demo-button"
-                onClick={onboard.accountSelect}
+                onClick={ethereum.accountSelect}
               >
                 Switch Account
               </button>
             )}
           </div>
-        </div>
-        <div className="container">
-          <h2>Transaction Notifications with Notify</h2>
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              marginBottom: '1rem'
-            }}
-          >
-            <div style={{ marginBottom: '1rem' }}>
-              <label>Send 0.001 Rinkeby Eth to:</label>
-              <input
-                type="text"
-                style={{
-                  padding: '0.5rem',
-                  border: 'none',
-                  borderRadius: '10px',
-                  marginLeft: '0.5rem',
-                  width: '18rem'
-                }}
-                value={toAddress}
-                placeholder="address"
-                onChange={e => setToAddress(e.target.value)}
-              />
-            </div>
-            <div>
-              <button
-                className="bn-demo-button"
-                onClick={async () => {
-                  const ready = await readyToTransact()
-                  if (!ready) return
-                  sendHash()
-                }}
-              >
-                Send
-              </button>
-              with in-flight notifications
-            </div>
-            <div>
-              <button
-                className="bn-demo-button"
-                onClick={async () => {
-                  const ready = await readyToTransact()
-                  if (!ready) return
-                  sendTransaction()
-                }}
-              >
-                Send
-              </button>
-              with pre-flight and in-flight notifications
-            </div>
-            <div>
-              <button
-                className="bn-demo-button"
-                onClick={async () => {
-                  const ready = await readyToTransact()
-                  if (!ready) return
-                  sendInternalTransaction()
-                }}
-              >
-                Send
-              </button>
-              via a internal transaction
-            </div>
-          </div>
+          <h2>Connect with Solana</h2>
           <div>
-            <button
-              className="bn-demo-button"
-              onClick={async () => {
-                if (!address) {
-                  await readyToTransact()
-                }
 
-                address && notify.account(address)
-              }}
-            >
-              Watch Current Account
-            </button>
-            <button
-              className="bn-demo-button"
-              onClick={async () => {
-                if (!address) {
-                  await readyToTransact()
-                }
+            {!provider.SOLANA && (
+              <button
+                className="bn-demo-button"
+                onClick={phantom}
+              >
+                Select a Wallet
+              </button>
+            )}
 
-                address && notify.unsubscribe(address)
-              }}
-            >
-              Un-watch Current Account
-            </button>
-            <button
-              className="bn-demo-button"
-              onClick={() => {
-                const { update } = notify.notification({
-                  eventCode: 'dbUpdate',
-                  type: 'pending',
-                  message: 'This is a custom notification triggered by the dapp'
-                })
-                setTimeout(
-                  () =>
-                    update({
-                      eventCode: 'dbUpdateSuccess',
-                      message: 'Updated status for custom notification',
-                      type: 'success'
-                    }),
-                  4000
-                )
-              }}
-            >
-              Custom Notification
-            </button>
+            {!!provider.SOLANA && (
+              <button
+                className="bn-demo-button"
+                onClick={resetPhantom}
+              >
+                Disconnect Phantom
+              </button>
+            )}
+
+          </div>
+          <h2>Connect with Polkadot</h2>
+          <div>
+
+            {!provider.POLKADOT && (
+              <button
+                className="bn-demo-button"
+                onClick={polkadot}
+              >
+                Select a Wallet
+              </button>
+            )}
+
+            {!!provider.POLKADOT &&(
+              <button
+                className="bn-demo-button"
+                onClick={resetPolkadot}
+              >
+                Disconnect Polkadot
+              </button>
+            )}
+
+          </div>
+
+        </div>
+        <div className="container" style={{width: '70%'}}>
+          <div className="container" style={{minWidth: '400px', maxWidth: '500px'}}>
+            <div>
+              {!provider.ETHEREUM && !provider.SOLANA && !provider.POLKADOT &&(
+                <h2>Please select a provider</h2>
+              )}
+            </div>
+            {!!provider.ETHEREUM && (
+              <div>
+                <h2>Transaction Notifications with Notify</h2>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  marginBottom: '1rem'
+                }}
+                >
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label>Send 0.001 Rinkeby Eth to:</label>
+                    <input
+                      type="text"
+                      style={{
+                        padding: '0.5rem',
+                        border: 'none',
+                        borderRadius: '10px',
+                        marginLeft: '0.5rem',
+                        width: '18rem'
+                      }}
+                      value={toAddress}
+                      placeholder="address"
+                      onChange={e => setToAddress(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <button
+                      className="bn-demo-button"
+                      onClick={async () => {
+                        const ready = await readyToTransact()
+                        if (!ready) return
+                        sendHash()
+                      }}
+                    >
+                      Send
+                    </button>
+                    with in-flight notifications
+                  </div>
+                  <div>
+                    <button
+                      className="bn-demo-button"
+                      onClick={async () => {
+                        const ready = await readyToTransact()
+                        if (!ready) return
+                        sendTransaction()
+                      }}
+                    >
+                      Send
+                    </button>
+                    with pre-flight and in-flight notifications
+                  </div>
+                  <div>
+                    <button
+                      className="bn-demo-button"
+                      onClick={async () => {
+                        const ready = await readyToTransact()
+                        if (!ready) return
+                        sendInternalTransaction()
+                      }}
+                    >
+                      Send
+                    </button>
+                    via a internal transaction
+                  </div>
+                </div>
+
+                <div>
+                  <button
+                    className="bn-demo-button"
+                    onClick={async () => {
+                      if (!address) {
+                        await readyToTransact()
+                      }
+
+                      address && notify.account(address)
+                    }}
+                  >
+                    Watch Current Account
+                  </button>
+                  <button
+                    className="bn-demo-button"
+                    onClick={async () => {
+                      if (!address) {
+                        await readyToTransact()
+                      }
+                      address && notify.unsubscribe(address)
+                    }}
+                  >
+                    Un-watch Current Account
+                  </button>
+                  <button
+                    className="bn-demo-button"
+                    onClick={() => {
+                      const { update } = notify.notification({
+                        eventCode: 'dbUpdate',
+                        type: 'pending',
+                        message: 'This is a custom notification triggered by the dapp'
+                      })
+                      setTimeout(
+                        () =>
+                          update({
+                            eventCode: 'dbUpdateSuccess',
+                            message: 'Updated status for custom notification',
+                            type: 'success'
+                          }),
+                        4000
+                      )
+                    }}
+                  >
+                    Custom Notification
+                  </button>
+                </div>
+              </div>
+            )}
+            {!!provider.SOLANA && (
+              <div>
+                <h2>Transaction Notifications with Phantom</h2>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  marginBottom: '1rem'
+                }}
+                >
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label>Send 0.001 Solana to:</label>
+                    <input
+                      type="text"
+                      style={{
+                        padding: '0.5rem',
+                        border: 'none',
+                        borderRadius: '10px',
+                        marginLeft: '0.5rem',
+                        width: '18rem'
+                      }}
+                      value={!!provider.SOLANA ? provider.SOLANA.publicKey?.toBase58() : ''}
+                      placeholder="address"
+                      onChange={e => setToAddress(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <button
+                    className="bn-demo-button"
+                    onClick={async () => {
+                      const ready = await sendSolanaTransaction()
+                      if (!ready) return
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            )}
+            {!!provider.POLKADOT && (
+              <div>
+                <h2>Transaction Notifications with Polkadot</h2>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  marginBottom: '1rem'
+                }}
+                >
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label>Send 0.001 DOT to:</label>
+                    <input
+                      type="text"
+                      style={{
+                        padding: '0.5rem',
+                        border: 'none',
+                        borderRadius: '10px',
+                        marginLeft: '0.5rem',
+                        width: '18rem'
+                      }}
+                      value={!!provider.POLKADOT ? address : ''}
+                      placeholder="address"
+                      onChange={e => setToAddress(e.target.value)}
+                    />
+                    <div>
+                      <button
+                        className="bn-demo-button"
+                        onClick={async () => {
+                          const ready = await sendPolkadotTransaction()
+                          if (!ready) return
+                        }}
+                      >
+                        Send
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div className="container">
@@ -399,7 +749,7 @@ function App() {
             onClick={() => {
               setDarkMode(true)
               notify.config({ darkMode: true })
-              onboard.config({ darkMode: true })
+              ethereum.config({ darkMode: true })
             }}
           >
             Dark Mode
@@ -413,7 +763,7 @@ function App() {
             onClick={() => {
               setDarkMode(false)
               notify.config({ darkMode: false })
-              onboard.config({ darkMode: false })
+              ethereum.config({ darkMode: false })
             }}
           >
             Light Mode
@@ -539,6 +889,10 @@ function networkName(id) {
       return 'rinkeby'
     case 5:
       return 'goerli'
+    case 6:
+      return 'solana mainnet-beta'
+    case 7:
+      return 'polkadot relay chain'
     case 42:
       return 'kovan'
     case 100:
